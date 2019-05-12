@@ -83,6 +83,12 @@
 	var/tmp/told_cant_shoot = 0 //So that it doesn't spam them with the fact they cannot hit them.
 	var/tmp/lock_time = -100
 
+	//automatic stuff
+	var/automatic = 0
+	var/shooting = 0
+	var/obj/screen/auto_target/auto_target
+	var/fire_rate = 100 //rounds per minute. Only used in automatic fire.
+
 /obj/item/weapon/gun/New()
 	..()
 	for(var/i in 1 to firemodes.len)
@@ -152,6 +158,20 @@
 
 	if(user && user.a_intent == I_HELP) //regardless of what happens, refuse to shoot if help intent is on
 		to_chat(user, "<span class='warning'>You refrain from firing \the [src] as your intent is set to help.</span>")
+	if(automatic == 1)//Are we are going to be using automatic shooting
+			//We check to make sure they can fire
+		if(!special_check(user))
+			return
+		if(auto_target)//If they already have one then update it
+			auto_target.loc = get_turf(A)
+			auto_target.delay_del = 1//And reset the del so its like they got a new one and doesnt instantly vanish
+			to_chat(user, "<span class='notice'>You ready \the [src]!  Click and drag the target around to shoot.</span>")
+		else//Otherwise just make a new one
+			auto_target = new/obj/screen/auto_target(get_turf(A), src)
+			visible_message("<span class='danger'>\ [user] readies the [src]!</span>")
+			playsound(src, 'sound/weapons/TargetOn.ogg', 50, 1)
+			to_chat(user, "<span class='notice'>You ready \the [src]!  Click and drag the target around to shoot.</span>")
+			return
 	else
 		Fire(A,user,params) //Otherwise, fire normally.
 
@@ -176,17 +196,34 @@
 		if (world.time % 3) //to prevent spam
 			to_chat(user, "<span class='warning'>[src] is not ready to fire again!</span>")
 		return
-
-	var/shoot_time = (burst - 1)* burst_delay
-	user.setClickCooldown(shoot_time) //no clicking on things while shooting
-	user.SetMoveCooldown(shoot_time) //no moving while shooting either
-	next_fire_time = world.time + shoot_time
+	if(!automatic)
+		var/shoot_time = (burst - 1)* burst_delay
+		user.setClickCooldown(shoot_time) //no clicking on things while shooting
+		user.SetMoveCooldown(shoot_time) //no moving while shooting either
+		next_fire_time = world.time + shoot_time
 
 	var/held_twohanded = (user.can_wield_item(src) && src.is_held_twohanded(user))
 
 	//actually attempt to shoot
 	var/turf/targloc = get_turf(target) //cache this in case target gets deleted during shooting, e.g. if it was a securitron that got destroyed.
+	shooting = 1
+	if(automatic == 1 && auto_target && auto_target.active)//When we are going to shoot and have an auto_target AND its active meaning we clicked on it we tell it to burstfire 1000 rounds
+		burst = fire_rate
+
 	for(var/i in 1 to burst)
+		if(!reflex && automatic)//If we are shooting automatic then check our target, however if we are shooting reflex we dont use automatic
+			//extra sanity checking.
+			if(user.incapacitated())
+				return
+			if(user.get_active_hand() != src)
+				break
+			if(!auto_target) break//Stopped shooting
+			else if(auto_target.loc)
+				target = auto_target.loc
+			//Lastly just update our dir if needed
+			if(user.dir != get_dir(user, auto_target))
+				user.face_atom(auto_target)
+			auto_target.active = 1
 		var/obj/projectile = consume_next_projectile(user)
 		if(!projectile)
 			handle_click_empty(user)
@@ -207,10 +244,11 @@
 		if(!(target && target.loc))
 			target = targloc
 			pointblank = 0
-
+		shooting = 0
 	//update timing
-	user.setClickCooldown(DEFAULT_QUICK_COOLDOWN)
-	user.SetMoveCooldown(move_delay)
+	if(!automatic)
+		user.setClickCooldown(DEFAULT_QUICK_COOLDOWN)
+		user.SetMoveCooldown(move_delay)
 	next_fire_time = world.time + fire_delay
 
 //obtains the next projectile to fire
@@ -232,6 +270,9 @@
 	else
 		src.visible_message("*click click*")
 	playsound(src.loc, 'sound/weapons/empty.ogg', 100, 1)
+	if(automatic)
+		auto_target.active = 0
+		auto_target = null
 
 //called after successfully firing
 /obj/item/weapon/gun/proc/handle_post_fire(mob/user, atom/target, var/pointblank=0, var/reflex=0)
